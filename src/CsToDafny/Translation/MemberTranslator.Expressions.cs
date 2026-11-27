@@ -138,6 +138,13 @@ public sealed partial class MemberTranslator
 
     private TExpr Literal(object? value, ITypeSymbol? type, IOperation op)
     {
+        if (type?.TypeKind == TypeKind.Enum && value is not null)
+        {
+            var member = type.GetMembers().OfType<IFieldSymbol>().FirstOrDefault(f => f.HasConstantValue && Equals(f.ConstantValue, value));
+            if (member is not null && _symbols.CtorOfEnumMember(member) is { } ctor)
+                return new TExpr(new MemberSel(new Ident(ctor.Datatype.Name), ctor.Name), Map(type, op.Syntax));
+            return new TExpr(Unsupported("enum value with no named member (flags or casts)", op), Map(type, op.Syntax));
+        }
         switch (value)
         {
             case null:
@@ -157,12 +164,25 @@ public sealed partial class MemberTranslator
             }
             case sbyte or byte or short or ushort or int or uint or long or ulong:
             {
-                var text = Convert.ToString(value, CultureInfo.InvariantCulture)!;
+                var text = SourceSpelling(op) ?? Convert.ToString(value, CultureInfo.InvariantCulture)!;
                 return new TExpr(new Lit(text), NumLit);
             }
             default:
                 return new TExpr(Unsupported($"constant of type {value.GetType().Name}", op), NumLit);
         }
+    }
+
+    /// <summary>
+    /// The literal as written (0x0024, 1_000), when the constant is a plain integer literal, possibly converted.
+    /// Dafny accepts the same hex and digit-separator syntax; type suffixes (L, u) are dropped.
+    /// </summary>
+    private static string? SourceSpelling(IOperation op)
+    {
+        var lit = op is IConversionOperation { Operand: ILiteralOperation l } ? l : op as ILiteralOperation;
+        if (lit?.Syntax is not Microsoft.CodeAnalysis.CSharp.Syntax.LiteralExpressionSyntax syntax) return null;
+        var text = syntax.Token.Text.TrimEnd('u', 'U', 'l', 'L');
+        if (text.StartsWith("0b", StringComparison.OrdinalIgnoreCase)) return null; // Dafny has no binary literals
+        return text.All(ch => char.IsAsciiHexDigit(ch) || ch is '_' or 'x' or 'X') ? text : null;
     }
 
     public static string StringLiteral(string s)
@@ -189,7 +209,7 @@ public sealed partial class MemberTranslator
     private Expr DefaultValue(ITypeSymbol t, IOperation site)
     {
         var mapped = Map(t, site.Syntax);
-        if (TypeTranslator.IsOption(mapped, out _)) return new Ident("None");
+        if (TypeTranslator.IsOption(mapped, out _)) return OptionNone;
         if (t.SpecialType == SpecialType.System_Boolean) return new Lit("false");
         if (t.SpecialType == SpecialType.System_Char) return new Lit("'\\0'");
         if (TypeTranslator.IsIntegral(t) || TypeTranslator.IsBigInteger(t)) return new Lit("0");
@@ -302,7 +322,7 @@ public sealed partial class MemberTranslator
             return new TExpr(Unsupported("user-defined indexer", p), Map(prop.Type, p.Syntax));
 
         var name = _symbols.MemberName(prop);
-        var type = Map(prop.Type, p.Syntax);
+        var type = Map(_symbols.TypeOf(prop), p.Syntax);
         if (!SymbolModel.IsComputedProperty(prop) && !prop.IsAbstract && prop.ContainingType.TypeKind != TypeKind.Interface)
             return new TExpr(Access(prop, p.Instance, name), type);
 
@@ -321,7 +341,7 @@ public sealed partial class MemberTranslator
         if (_pending is null)
         {
             _diags.Unsupported("method call or allocation inside an expression that must be pure (function, lambda or contract)", site.Syntax);
-            return rhs is ExprRhs er ? er.Expr : new Opaque(site.Syntax.ToString());
+            return new Opaque(site.Syntax.ToString());
         }
         var tmp = FreshTemp();
         _pending.Add(new VarDeclStmt([new BoundVar(tmp, type)], [rhs]));
@@ -350,7 +370,7 @@ public sealed partial class MemberTranslator
         if (m.MethodKind == MethodKind.DelegateInvoke)
         {
             var fn = ReceiverT(inv.Instance!);
-            return new TExpr(new Apply(fn.E, args.Select(a => ExprAs(a.Value, Map(a.Parameter!.Type, a.Syntax))).ToList()), Map(m.ReturnType, inv.Syntax));
+            return new TExpr(new Apply(fn.E, args.Select(Argument).ToList()), Map(m.ReturnType, inv.Syntax));
         }
         if (m.MethodKind == MethodKind.LocalFunction)
             return new TExpr(Unsupported("local function", inv), Map(m.ReturnType, inv.Syntax));
@@ -359,9 +379,17 @@ public sealed partial class MemberTranslator
         if (args.Any(a => a.Parameter!.RefKind != RefKind.None))
             return new TExpr(Unsupported("ref/out arguments", inv), Map(m.ReturnType, inv.Syntax));
 
-        var call = new Apply(Callee(m, inv.Instance), args.Select(a => ExprAs(a.Value, Map(a.Parameter!.Type, a.Syntax))).ToList());
+        var call = new Apply(Callee(m, inv.Instance), args.Select(Argument).ToList());
         var type = m.ReturnsVoid ? NumLit : Map(m.ReturnType, inv.Syntax);
         return IsFunction(m) ? new TExpr(call, type) : new TExpr(HoistCall(call, type, inv), type);
+    }
+
+    /// <summary>An argument coerced to its parameter's type. Roslyn records argument conversions on the argument itself.</summary>
+    private Expr Argument(IArgumentOperation a)
+    {
+        if (a.InConversion.MethodSymbol is not null)
+            return Unsupported("user-defined implicit conversion of an argument", a);
+        return ExprAs(a.Value, Map(a.Parameter!.Type, a.Syntax));
     }
 
     private bool IsFunction(IMethodSymbol m) => _symbols.Functions.Contains(m.OriginalDefinition);
@@ -441,6 +469,11 @@ public sealed partial class MemberTranslator
             left = ExprAs(b.LeftOperand, Map(b.LeftOperand.Type!, b.Syntax));
             right = ExprAs(b.RightOperand, Map(b.RightOperand.Type!, b.Syntax));
         }
+        else if (text is "==" or "!=" or "<" or "<=" or ">" or ">=" && CharOperand(b.LeftOperand) is { } lc && CharOperand(b.RightOperand) is { } rc)
+        {
+            left = lc;
+            right = rc;
+        }
         else
         {
             left = Expr(b.LeftOperand);
@@ -448,6 +481,19 @@ public sealed partial class MemberTranslator
         }
         NoteEquality(b.LeftOperand.Type, text);
         return new TExpr(new BinaryExpr(text, left, right), text is "==" or "!=" or "<" or "<=" or ">" or ">=" or "&&" or "||" ? Types.Bool : resultType);
+    }
+
+    /// <summary>
+    /// An operand of a char comparison, as a Dafny char: a char promoted to int, or an integer constant that is a
+    /// valid char (c &gt;= 0x20A0). Null if the comparison is not really between chars.
+    /// </summary>
+    private Expr? CharOperand(IOperation op)
+    {
+        if (op is IConversionOperation { IsImplicit: true, Operand: var inner } && inner.Type?.SpecialType == SpecialType.System_Char)
+            return Expr(inner);
+        if (op.ConstantValue is { HasValue: true, Value: int v } && v is >= 0 and < 0xD800)
+            return new Lit(CharLiteral((char)v));
+        return null;
     }
 
     private void NoteEquality(ITypeSymbol? t, string op)
@@ -604,14 +650,14 @@ public sealed partial class MemberTranslator
             if (!SymbolEqualityComparer.Default.Equals(c.OriginalDefinition, primary?.OriginalDefinition))
                 return Unsupported("record constructed through a non-primary constructor", oc);
             foreach (var arg in oc.Arguments)
-                values[SymbolModel.Ident(arg.Parameter!.Name)] = ExprAs(arg.Value, Map(arg.Parameter.Type, arg.Syntax));
+                values[SymbolModel.Ident(arg.Parameter!.Name)] = ExprAs(arg.Value, Map(_symbols.TypeOf(arg.Parameter), arg.Syntax));
         }
         if (oc.Initializer is { } init)
         {
             foreach (var i in init.Initializers)
             {
                 if (i is ISimpleAssignmentOperation { Target: IPropertyReferenceOperation pr } a)
-                    values[SymbolModel.Ident(pr.Property.Name)] = ExprAs(a.Value, Map(pr.Property.Type, a.Syntax));
+                    values[SymbolModel.Ident(pr.Property.Name)] = ExprAs(a.Value, Map(_symbols.TypeOf(pr.Property), a.Syntax));
                 else
                     return Unsupported("record initializer element", i);
             }
@@ -619,7 +665,7 @@ public sealed partial class MemberTranslator
         var args = new List<Expr>();
         foreach (var f in ctor.Fields)
         {
-            if (values.TryGetValue(f.Name, out var v)) args.Add(v);
+            if (values.TryGetValue(f.SourceName, out var v)) args.Add(v);
             else args.Add(DefaultForMissingField(f, oc));
         }
         return ctor.Fields.Count == 0 ? new Ident(ctor.Name) : new Apply(new Ident(ctor.Name), args);
@@ -675,7 +721,7 @@ public sealed partial class MemberTranslator
         foreach (var i in w.Initializer.Initializers)
         {
             if (i is ISimpleAssignmentOperation { Target: IPropertyReferenceOperation pr } a)
-                updates.Add((SymbolModel.Ident(pr.Property.Name), ExprAs(a.Value, Map(pr.Property.Type, a.Syntax))));
+                updates.Add((_symbols.MemberName(pr.Property), ExprAs(a.Value, Map(_symbols.TypeOf(pr.Property), a.Syntax))));
             else
                 return new TExpr(Unsupported("'with' initializer element", i), type);
         }
@@ -790,7 +836,7 @@ public sealed partial class MemberTranslator
         try
         {
             var whenNotNull = Translate(ca.WhenNotNull);
-            var absent = TypeTranslator.IsOption(type, out _) ? (Expr)new Ident("None") : new Lit("null");
+            var absent = TypeTranslator.IsOption(type, out _) ? (Expr)OptionNone : new Lit("null");
             return new TExpr(new IteExpr(isPresent, Coerce(whenNotNull, type), absent), type);
         }
         finally

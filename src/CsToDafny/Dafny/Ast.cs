@@ -156,6 +156,9 @@ public sealed record OpaqueStmt(string CSharp) : Stmt;
 /// <summary>var x :| x in s;  (choose any element)</summary>
 public sealed record AssignSuchThatStmt(string Var, Expr Set) : Stmt;
 
+/// <summary>"new;": ends the first phase of a constructor, after which "this" may be used freely.</summary>
+public sealed record NewDividerStmt : Stmt;
+
 public sealed record AssertStmt(Expr Cond, string? Comment = null) : Stmt;
 
 #endregion

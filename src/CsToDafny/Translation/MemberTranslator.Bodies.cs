@@ -202,7 +202,7 @@ public sealed partial class MemberTranslator
                 }
                 if (op is IExpressionStatementOperation { Operation: IInvocationOperation inv } && GuardCondition(inv) is { } g)
                 {
-                    requires.Add(g);
+                    if (g is not Lit { Text: "true" }) requires.Add(g);
                     continue;
                 }
                 // A leading Debug.Assert documents what callers must ensure.

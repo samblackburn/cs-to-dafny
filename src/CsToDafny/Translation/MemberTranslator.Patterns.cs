@@ -247,7 +247,7 @@ public sealed partial class MemberTranslator
                 foreach (var sp in rp.PropertySubpatterns)
                 {
                     if (sp.Member is not IPropertyReferenceOperation { Instance: IInstanceReferenceOperation } pr) return null;
-                    var index = ctor3.Fields.FindIndex(f => f.Name == SymbolModel.Ident(pr.Property.Name));
+                    var index = ctor3.Fields.FindIndex(f => f.SourceName == SymbolModel.Ident(pr.Property.Name));
                     if (index < 0 || VarOrWild(sp.Pattern) is not { } sub) return null;
                     args[index] = sub;
                 }

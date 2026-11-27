@@ -234,6 +234,11 @@ public sealed class DeclTranslator(SymbolModel symbols, TypeTranslator types, Di
         foreach (var m in Classifier.Members(t))
         {
             if (stub && !selection.IsMemberEmitted(MemberSymbol(m))) continue;
+            if (IsObjectOverride(m))
+            {
+                diags.Warn($"override of object.{m.Name} skipped: Dafny classes use reference equality", Syntax(m));
+                continue;
+            }
             members.Add(Member(m, t, stub));
         }
 
@@ -300,8 +305,27 @@ public sealed class DeclTranslator(SymbolModel symbols, TypeTranslator types, Di
         var (requires, consumed) = options.GuardsAsPreconditions ? mt.LeadingGuards(ops) : ([], 0);
         var stmts = FieldInitStatements(t, fieldInits);
         stmts.AddRange(mt.MethodBody(ops, consumed, null, c));
+        stmts = WithNewDivider(stmts);
         return new MethodDecl(MemberTranslator.ConstructorName(c) ?? "", false, true, [], Formals(c), [], stmts)
             { Requires = requires.Concat(ParamRequires(c)).ToList() };
+    }
+
+    /// <summary>
+    /// Dafny constructors run in two phases: fields are assigned first, and only after "new;" may the body call
+    /// methods on "this" or use it otherwise. Insert "new;" before the first statement that needs it.
+    /// </summary>
+    private static List<Stmt> WithNewDivider(List<Stmt> stmts)
+    {
+        var bareCall = new System.Text.RegularExpressions.Regex(@"(?<![\w.'])[A-Za-z]\w*'?\(|\bthis\b(?!\.\w+ :=)");
+        bool FirstPhase(Stmt s) => s switch
+        {
+            CommentStmt => true,
+            AssignStmt or VarDeclStmt => !bareCall.IsMatch(Printer.Print([new MethodDecl("m", false, false, [], [], [], [s])]).Split('{', 2)[1]),
+            _ => false,
+        };
+        var k = stmts.FindIndex(s => !FirstPhase(s));
+        if (k < 0) return stmts;
+        return [.. stmts.Take(k), new NewDividerStmt(), .. stmts.Skip(k)];
     }
 
     #endregion
@@ -329,6 +353,14 @@ public sealed class DeclTranslator(SymbolModel symbols, TypeTranslator types, Di
         var name = symbols.MemberName(m);
         var formals = Formals(m);
         var body = stub ? null : Classifier.BodyOf(m, symbols);
+        if (body is not null && m.Parameters.FirstOrDefault(p => p.RefKind != RefKind.None) is { } byRef)
+        {
+            // Dropping ref/out would silently change behaviour: callers would not see the assignment.
+            diags.Unsupported($"{byRef.RefKind.ToString().ToLowerInvariant()} parameter '{byRef.Name}'", Syntax(byRef)!);
+            return new MethodDecl(name, m.IsStatic, false, TypeParams(m.TypeParameters), formals,
+                m.ReturnsVoid ? [] : [new Formal("result", types.Map(m.ReturnType, Syntax(m)))],
+                [new OpaqueStmt(Syntax(m)!.ToString())]);
+        }
         var mt = Translator(owner);
         var ops = body?.Operations.ToList() ?? [];
         var (guards, consumed) = body is not null && options.GuardsAsPreconditions ? mt.LeadingGuards(ops) : ([], 0);
