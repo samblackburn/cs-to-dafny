@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/cs2dfy/cs2dfy.csproj" />
+    <Project Path="src/CsToDafny/CsToDafny.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/CsToDafny.Tests/CsToDafny.Tests.csproj" />
+  </Folder>
+</Solution>
