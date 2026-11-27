@@ -250,8 +250,11 @@ public sealed class Printer
             case AssignSuchThatStmt st:
                 Line($"var {st.Var} :| {st.Var} in {ExprToString(st.Set, PRel + 1)};");
                 break;
+            case NewDividerStmt:
+                Line("new;");
+                break;
             case AssertStmt a:
-                Line($"assert {ExprToString(a.Cond, 0)};" + (a.Comment is null ? "" : " // " + a.Comment));
+                Line($"assert {ExprToString(a.Cond, 0)};" + (a.Comment is null ? "" : " // " + SanitizeComment(a.Comment)));
                 break;
             case OpaqueStmt o:
                 Line($"UNTRANSLATED(/* {SanitizeComment(o.CSharp)} */);");

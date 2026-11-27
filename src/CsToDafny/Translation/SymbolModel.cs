@@ -24,7 +24,11 @@ public sealed class CtorInfo(string name, INamedTypeSymbol? type, IFieldSymbol? 
     public DatatypeInfo Datatype { get; set; } = null!;
 }
 
-public sealed record DatatypeField(string Name, ITypeSymbol Type, IPropertySymbol? Property, IParameterSymbol? Parameter);
+public sealed record DatatypeField(string Name, ITypeSymbol Type, IPropertySymbol? Property, IParameterSymbol? Parameter)
+{
+    /// <summary>The C# name, before any renaming to resolve clashes between constructors.</summary>
+    public string SourceName { get; init; } = Name;
+}
 
 /// <summary>Whole-program facts the member translators need: datatypes, names, and which methods are Dafny functions.</summary>
 public sealed class SymbolModel
@@ -102,7 +106,63 @@ public sealed class SymbolModel
             }
             Register(root);
         }
+        BreakNullabilityCycles();
     }
+
+    private readonly HashSet<ISymbol> _forcedNullable = new(SymbolEqualityComparer.Default);
+
+    /// <summary>
+    /// The type of a record property or primary-constructor parameter, as translated. Usually the declared type;
+    /// see <see cref="BreakNullabilityCycles"/> for the exception.
+    /// </summary>
+    public ITypeSymbol TypeOf(IPropertySymbol p) =>
+        _forcedNullable.Contains(p.OriginalDefinition) ? p.Type.WithNullableAnnotation(NullableAnnotation.Annotated) : p.Type;
+
+    public ITypeSymbol TypeOf(IParameterSymbol p) =>
+        _forcedNullable.Contains(p.OriginalDefinition) ? p.Type.WithNullableAnnotation(NullableAnnotation.Annotated) : p.Type;
+
+    /// <summary>
+    /// A record that refers back to itself through plain (non-collection) fields
+    /// (SelectModel.Union -> UnionLink.Lhs -> SelectModel) can only end with null at runtime, whatever its
+    /// nullable annotations say. Translated as non-null, it
+    /// would be a datatype with no finite values, so such fields are made nullable (Option).
+    /// </summary>
+    private void BreakNullabilityCycles()
+    {
+        var dtOf = Datatypes.Where(d => !d.IsEnum).ToDictionary(d => d.Root, d => d, SymbolEqualityComparer.Default);
+        DatatypeInfo? Target(DatatypeField f) =>
+            f.Type.NullableAnnotation != NullableAnnotation.Annotated && DatatypeOf(f.Type) is { IsEnum: false } t ? t : null;
+
+        bool Reaches(DatatypeInfo from, DatatypeInfo goal)
+        {
+            var seen = new HashSet<DatatypeInfo>();
+            var stack = new Stack<DatatypeInfo>([from]);
+            while (stack.Count > 0)
+            {
+                var d = stack.Pop();
+                if (d == goal) return true;
+                if (!seen.Add(d)) continue;
+                foreach (var f in d.Ctors.SelectMany(c => c.Fields))
+                    if (Target(f) is { } next) stack.Push(next);
+            }
+            return false;
+        }
+
+        foreach (var dt in dtOf.Values)
+        foreach (var ctor in dt.Ctors)
+            for (var i = 0; i < ctor.Fields.Count; i++)
+            {
+                var f = ctor.Fields[i];
+                if (Target(f) is not { } target || !Reaches(target, dt)) continue;
+                if (f.Property is { } p) _forcedNullable.Add(p.OriginalDefinition);
+                if (f.Parameter is { } q) _forcedNullable.Add(q.OriginalDefinition);
+                ctor.Fields[i] = f with { Type = f.Type.WithNullableAnnotation(NullableAnnotation.Annotated) };
+                ForcedNullableFields.Add($"{dt.Name}.{ctor.Name}.{f.Name}");
+            }
+    }
+
+    /// <summary>Fields made nullable by <see cref="BreakNullabilityCycles"/>, for reporting.</summary>
+    public List<string> ForcedNullableFields { get; } = [];
 
     private bool IsSourceRecord(INamedTypeSymbol? t) => t is not null && t.IsRecord && IsSourceType(t);
 
@@ -132,8 +192,29 @@ public sealed class SymbolModel
         return ctor;
     }
 
+    /// <summary>
+    /// Dafny requires a field name shared by several constructors to have one type. C# record hierarchies often
+    /// reuse a property name with different types, so the minority constructors' fields are renamed Ctor_Field.
+    /// </summary>
+    private void ResolveFieldClashes(DatatypeInfo dt)
+    {
+        foreach (var group in dt.Ctors.SelectMany(c => c.Fields.Select(f => (c, f))).GroupBy(x => x.f.Name))
+        {
+            var byType = group.GroupBy(x => x.f.Type.WithNullableAnnotation(NullableAnnotation.None), SymbolEqualityComparer.Default)
+                .OrderByDescending(g => g.Count()).ToList();
+            if (byType.Count < 2) continue;
+            foreach (var (ctor, field) in byType.Skip(1).SelectMany(g => g))
+            {
+                var renamed = field with { Name = $"{ctor.Name}_{field.Name}" };
+                ctor.Fields[ctor.Fields.IndexOf(field)] = renamed;
+                if (field.Property is { } p) _names[p.OriginalDefinition] = renamed.Name;
+            }
+        }
+    }
+
     private void Register(DatatypeInfo dt)
     {
+        ResolveFieldClashes(dt);
         Datatypes.Add(dt);
         _datatypeByType[dt.Root] = dt;
         foreach (var c in dt.Ctors)

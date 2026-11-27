@@ -51,6 +51,8 @@ public static class Converter
             diags.Add(Severity.Warning, "nullable reference types are disabled: reference types are assumed non-null", null);
 
         var symbols = new SymbolModel(compilation);
+        foreach (var f in symbols.ForcedNullableFields)
+            diags.Add(Severity.Warning, $"field {f} made nullable: the record refers back to itself, so in C# the chain must end with null", null);
         var selection = new Selection(symbols, options.Include);
         // Outside the selection, members of stateful classes are integrations: model them as effectful methods.
         Classifier.Classify(symbols, m => !m.IsStatic && !selection.IsIncluded(m.ContainingType) &&

@@ -61,7 +61,7 @@ module Translated {
 
   // C# static class Banking.Bank
   class Bank {
-    static const MaxDeposit: int64 := 1000000
+    static const MaxDeposit: int64 := 1_000_000
 
     static method Open() returns (result: Wallet)
     {

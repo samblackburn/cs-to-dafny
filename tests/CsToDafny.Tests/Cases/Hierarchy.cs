@@ -49,5 +49,6 @@ public static class Geometry
 
     public static int RadiusOrZero(Shape s) => s is Circle c ? c.Radius : 0;
 
-    public static int Area(Rect r) => r.W < 1000 && r.H < 1000 && r.W >= 0 && r.H >= 0 ? r.W * r.H : 0;
+    // Linear arithmetic only: non-linear facts (like W * H < 2^31) are not proved reliably by the solver.
+    public static int Perimeter(Rect r) => r.W < 1000 && r.H < 1000 && r.W >= 0 && r.H >= 0 ? 2 * (r.W + r.H) : 0;
 }

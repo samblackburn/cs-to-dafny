@@ -30,8 +30,7 @@ module Translated {
 
     static function Digit(c: char): int32
     {
-      if c as int32 >= '0' as int32 && c as int32 <= '9' as int32 then c as int32 - '0' as int32
-      else -1
+      if c >= '0' && c <= '9' then c as int32 - '0' as int32 else -1
     }
 
     static function Join(a: string, b: string): string

@@ -28,12 +28,12 @@ module Translated {
 
     static function LimitPlusOne(a: Account): Option<int32>
     {
-      if a.Limit.Some? && a.Limit.value < 1000 then Some(a.Limit.value + 1) else None
+      if a.Limit.Some? && a.Limit.value < 1000 then Option.Some(a.Limit.value + 1) else Option.None
     }
 
     static function NicknameLengthOrNull(a: Account): Option<int32>
     {
-      if a.Nickname.Some? then Some(SeqCount(a.Nickname.value)) else None
+      if a.Nickname.Some? then Option.Some(SeqCount(a.Nickname.value)) else Option.None
     }
 
     static function UnsafeLength(a: Account): int32

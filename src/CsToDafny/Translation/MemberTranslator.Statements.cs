@@ -179,7 +179,7 @@ public sealed partial class MemberTranslator
                 var m = inv.TargetMethod;
                 WithPending(output, () =>
                 {
-                    var call = new Apply(Callee(m, inv.Instance), OrderedArgs(inv).Select(a => ExprAs(a.Value, Map(a.Parameter!.Type, a.Syntax))).ToList());
+                    var call = new Apply(Callee(m, inv.Instance), OrderedArgs(inv).Select(Argument).ToList());
                     if (IsFunction(m))
                     {
                         _diags.Warn("result of a pure call is discarded", inv.Syntax);

@@ -66,10 +66,10 @@ module Translated {
       if s.Circle? then s.Radius else 0
     }
 
-    static function Area(r: Shape): int32
+    static function Perimeter(r: Shape): int32
       requires r.Rect?
     {
-      if r.W < 1000 && r.H < 1000 && r.W >= 0 && r.H >= 0 then r.W * r.H else 0
+      if r.W < 1000 && r.H < 1000 && r.W >= 0 && r.H >= 0 then 2 * (r.W + r.H) else 0
     }
   }
 }

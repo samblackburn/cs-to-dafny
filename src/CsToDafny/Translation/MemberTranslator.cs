@@ -45,6 +45,10 @@ public sealed partial class MemberTranslator
         _containingType = containingType;
     }
 
+    // Qualified, because user enums commonly have a member called None.
+    private static readonly Expr OptionNone = new MemberSel(new Ident("Option"), "None");
+    private static readonly Expr OptionSome = new MemberSel(new Ident("Option"), "Some");
+
     private static readonly NamedType NumLit = new("#numeric-literal");
     private static readonly NamedType NullLitType = new("#null");
 
@@ -105,10 +109,15 @@ public sealed partial class MemberTranslator
     {
         if (TypeTranslator.TypeEquals(x.T, expected)) return x.E;
         if (x.T == NullLitType)
-            return TypeTranslator.IsOption(expected, out _) ? new Ident("None") : new Lit("null");
+        {
+            if (TypeTranslator.IsOption(expected, out _)) return OptionNone;
+            if (expected is NamedType { Name: var n } && n.EndsWith('?')) return new Lit("null");
+            _diags.WarnOnce("null-nonnull", "null used where the C# type is not nullable (enable nullable reference types and annotate it with '?'); left untranslated", null);
+            return new Opaque("null as non-nullable " + Printer.TypeToString(expected));
+        }
         var expIsOpt = TypeTranslator.IsOption(expected, out var expInner);
         var actIsOpt = TypeTranslator.IsOption(x.T, out var actInner);
-        if (expIsOpt && !actIsOpt) return new Apply(new Ident("Some"), [Coerce(x, expInner)]);
+        if (expIsOpt && !actIsOpt) return new Apply(OptionSome, [Coerce(x, expInner)]);
         if (actIsOpt && !expIsOpt) return Coerce(new TExpr(new MemberSel(x.E, "value"), actInner), expected);
         if (actIsOpt && expIsOpt) return x.E;
 
